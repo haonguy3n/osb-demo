@@ -1,14 +1,15 @@
 name: build
 
-# Builds the Ubuntu image and its installer ISO, and keeps them as artifacts for
-# 30 days:
+# Builds both images of this project and keeps them as artifacts for 30 days:
 #
-#   demo-image.img + .img.bmap   what you bmaptool onto an SSD or SD card
-#   demo-image.iso               hybrid BIOS/UEFI installer for the same image
-#   demo-image.sbom.json         the package list that went into it
-#
-# The image boots through the distro's own signed shim and GRUB, so it comes up
-# under stock Secure Boot keys without enrolling anything.
+#   demo-image    Ubuntu behind the distro's own signed shim and GRUB. Boots
+#                 under stock Secure Boot keys with nothing enrolled. Artifacts:
+#                 .img + .img.bmap (bmaptool), .iso (installer), .sbom.json
+#   verity-image  Ubuntu behind the distro's shim, but with osb's own signed UKI
+#                 as the second stage and dm-verity underneath. Needs osb's
+#                 certificate enrolled once (MokManager, or mokutil from a live
+#                 system); the certificate ships on the ESP. Artifacts: .img +
+#                 .img.bmap + .sbom.json
 #
 # osb comes from its latest release; if there is no release yet it is built from
 # source, so this works either way.
@@ -26,9 +27,19 @@ concurrency:
 
 jobs:
   image:
-    name: ubuntu signed-shim
+    name: ${{ matrix.image }}
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: demo-image
+            chain: grub
+            iso: true
+          - image: verity-image
+            chain: uki
+            iso: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -63,7 +74,7 @@ jobs:
       - name: Cache osb's toolchain image
         # The toolchain image (compiler and distro tooling) is the most expensive
         # part of a from-scratch build. It holds the builder, not the target
-        # packages, so a week-old one is fine.
+        # packages, so a week-old one is fine. Both jobs want the same one.
         id: toolchain
         uses: actions/cache@v4
         with:
@@ -74,8 +85,8 @@ jobs:
         run: |
           zstd -dc "$RUNNER_TEMP/osb-toolchains.tar.zst" | docker load \
             || echo "warning: cached toolchain image unusable; rebuilding"
-      - name: Build the image and the ISO
-        run: osb build demo-image -distro ubuntu -machine x86_64
+      - name: Build ${{ matrix.image }}
+        run: osb build ${{ matrix.image }} -distro ubuntu -machine x86_64
       - name: Save the toolchain image for the cache
         if: steps.toolchain.outputs.cache-hit != 'true'
         run: |
@@ -84,33 +95,35 @@ jobs:
           docker save $images | zstd -T0 -3 > "$RUNNER_TEMP/osb-toolchains.tar.zst"
       - name: Check the artifacts
         run: |
-          d=build/ubuntu/demo-image.x86_64/destdir
+          # mtools reads the ESP the way the firmware does; openssl reads the
+          # certificate osb stages for MOK.
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends mtools
+          d="build/ubuntu/${{ matrix.image }}.x86_64/destdir"
           ls -l "$d"
           # The bmap has to describe the image exactly or flashing with bmaptool
           # would corrupt the disk: every range checksum matches the image, and
           # every block the bmap skips is zero.
-          tools/check-bmap.py "$d/demo-image.img"
-          # The distro's signed chain has to be on the ESP itself, not just
-          # installed in the rootfs: shim as the boot file and our own grub.cfg
-          # with the slot command line.
-          read -r start size < <(sfdisk -d "$d/demo-image.img" | sed -n 's/.*img1 : start= *\([0-9]*\), size= *\([0-9]*\).*/\1 \2/p')
-          esp() { dd if="$d/demo-image.img" bs=512 skip="$start" count="$size" status=none; }
-          esp | grep -aq 'UEFI SHIM'
-          esp | grep -aq 'osb.overlay=tmpfs'
-          esp | grep -aq 'osb.slot='
-          # Hybrid boot, the installer payload, and prompts on a screen console.
-          grep -aq 'EL TORITO SPECIFICATION' "$d/demo-image.iso"
-          grep -aq 'osb.install=/osb/demo-image.img.gz' "$d/demo-image.iso"
-          grep -aq 'console=tty0' "$d/demo-image.iso"
-          echo "image carries the signed shim chain; ISO installs with prompts on screen"
+          tools/check-bmap.py "$d/${{ matrix.image }}.img"
+          # The signed chain has to be on the ESP itself, not merely installed in
+          # the rootfs, and osb's certificate has to be there for MOK.
+          tools/check-esp.sh "$d/${{ matrix.image }}.img" "${{ matrix.chain }}"
+          if [ "${{ matrix.iso }}" = "true" ]; then
+            # Hybrid boot, the installer payload, and prompts on a screen console.
+            grep -aq 'EL TORITO SPECIFICATION' "$d/${{ matrix.image }}.iso"
+            grep -aq 'osb.install=/osb/${{ matrix.image }}.img.gz' "$d/${{ matrix.image }}.iso"
+            grep -aq 'console=tty0' "$d/${{ matrix.image }}.iso"
+            echo "ISO boots on BIOS and UEFI and installs with prompts on screen"
+          fi
       - uses: actions/upload-artifact@v4
         with:
-          name: demo-image-ubuntu
+          name: ${{ matrix.image }}
           path: |
-            build/ubuntu/demo-image.x86_64/destdir/demo-image.img
-            build/ubuntu/demo-image.x86_64/destdir/demo-image.img.bmap
-            build/ubuntu/demo-image.x86_64/destdir/demo-image.iso
-            build/ubuntu/demo-image.x86_64/destdir/demo-image.sbom.json
+            build/ubuntu/${{ matrix.image }}.x86_64/destdir/${{ matrix.image }}.img
+            build/ubuntu/${{ matrix.image }}.x86_64/destdir/${{ matrix.image }}.img.bmap
+            build/ubuntu/${{ matrix.image }}.x86_64/destdir/${{ matrix.image }}.iso
+            build/ubuntu/${{ matrix.image }}.x86_64/destdir/${{ matrix.image }}.sbom.json
+          if-no-files-found: warn
           retention-days: 30
       - name: Collect build logs
         if: failure()
@@ -120,6 +133,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: build-logs
+          name: build-logs-${{ matrix.image }}
           path: logs
           if-no-files-found: ignore

@@ -5,14 +5,17 @@ DEST := build/$(DISTRO)/$(IMAGE).$(MACHINE)/destdir
 
 .PHONY: build check run flash iso list key clean
 
-## Build the disk image, its bmap and the installer ISO.
+## Build the disk image, its bmap and (for demo-image) the installer ISO.
 build:
 	osb build $(IMAGE) -distro $(DISTRO) -machine $(MACHINE)
-	@ls -l $(DEST)/$(IMAGE).img $(DEST)/$(IMAGE).img.bmap $(DEST)/$(IMAGE).iso
+	@ls -l $(DEST)/$(IMAGE).img $(DEST)/$(IMAGE).img.bmap
 
-## Prove the bmap describes the image exactly (what bmaptool relies on).
+## Prove the bmap describes the image, and the signed chain is on the ESP.
 check:
 	tools/check-bmap.py $(DEST)/$(IMAGE).img
+	tools/check-esp.sh $(DEST)/$(IMAGE).img "$(CHAIN)"
+
+CHAIN = $(if $(filter verity-image,$(IMAGE)),uki,grub)
 
 ## Boot the installer ISO in QEMU. Use MACHINE=qemu-x86_64 for a serial console.
 run:
