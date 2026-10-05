@@ -57,6 +57,13 @@ jobs:
           fi
           sudo install -m 0755 "$RUNNER_TEMP/osb" /usr/local/bin/osb
           osb version | tee "$RUNNER_TEMP/osb-version.txt"
+      - name: Install the tooling the images need
+        # verity-image builds a signed UKI: ukify signs it through sbsign, and
+        # mtools writes it onto the ESP. mtools is also what tools/check-esp.sh
+        # reads the ESP with, for either image.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends systemd-ukify sbsigntool mtools
       - name: Allow unprivileged user namespaces
         # osb builds every unit inside a bwrap sandbox, which needs
         # unprivileged user namespaces: Ubuntu 24.04 denies them by default
@@ -95,10 +102,6 @@ jobs:
           docker save $images | zstd -T0 -3 > "$RUNNER_TEMP/osb-toolchains.tar.zst"
       - name: Check the artifacts
         run: |
-          # mtools reads the ESP the way the firmware does; openssl reads the
-          # certificate osb stages for MOK.
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends mtools
           d="build/ubuntu/${{ matrix.image }}.x86_64/destdir"
           ls -l "$d"
           # The bmap has to describe the image exactly or flashing with bmaptool
