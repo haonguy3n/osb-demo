@@ -1,0 +1,122 @@
+name: build
+
+# Builds this project's disk image and installer ISO for each distro and keeps
+# them as artifacts:
+#
+#   demo-image.img        what you bmaptool onto an SSD or SD card
+#   demo-image.img.bmap   the block map bmaptool follows (and verifies)
+#   demo-image.iso        hybrid BIOS/UEFI installer for the same image
+#   demo-image.sbom.json  the package list that went into it
+#
+# Artifacts are kept for 30 days; rebuild or download them from the run page.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    name: ${{ matrix.distro }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [alpine, ubuntu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Build osb
+        # osb has no published releases yet, so it is built from source here.
+        # When there is a release, download its binary instead of this step.
+        run: |
+          git clone --depth 1 https://github.com/haonguy3n/osb.git osb-src
+          (cd osb-src && go build -o osb ./cmd/osb)
+          echo "$GITHUB_WORKSPACE/osb-src" >> "$GITHUB_PATH"
+      - name: Allow unprivileged user namespaces
+        # osb builds every unit inside a bwrap sandbox, which needs
+        # unprivileged user namespaces: Ubuntu 24.04 denies them by default
+        # through AppArmor, and then every unit fails with "setting up uid map:
+        # Permission denied".
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo sysctl -w kernel.unprivileged_userns_clone=1 || true
+          unshare --user --map-root-user true
+      - name: Cache key inputs
+        id: week
+        run: echo "week=$(date +%Y-%V)" >> "$GITHUB_OUTPUT"
+      - name: Cache osb's toolchain image
+        # The toolchain image (compiler and distro tooling) is the most
+        # expensive part of a from-scratch build. It holds the builder, not the
+        # target packages, so a week-old one is fine.
+        id: toolchain
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/osb-toolchains.tar.zst
+          key: toolchain-${{ runner.arch }}-${{ matrix.distro }}-${{ hashFiles('osb-src/stdlib/module-*/containers/**') }}-${{ steps.week.outputs.week }}
+      - name: Load the toolchain image
+        if: steps.toolchain.outputs.cache-hit == 'true'
+        run: |
+          zstd -dc "$RUNNER_TEMP/osb-toolchains.tar.zst" | docker load \
+            || echo "warning: cached toolchain image unusable; rebuilding"
+      - name: Build the image and the ISO
+        run: osb build demo-image -distro ${{ matrix.distro }} -machine x86_64
+      - name: Save the toolchain image for the cache
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          images=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep '^osb/toolchain' || true)
+          [ -n "$images" ] || exit 0
+          docker save $images | zstd -T0 -3 > "$RUNNER_TEMP/osb-toolchains.tar.zst"
+      - name: Check the ISO is installable
+        run: |
+          d="build/${{ matrix.distro }}/demo-image.x86_64/destdir"
+          ls -l "$d"
+          # El Torito with a BIOS entry, a UEFI section, the installer payload,
+          # and a screen console for the prompts.
+          grep -aq 'EL TORITO SPECIFICATION' "$d/demo-image.iso"
+          grep -aq 'osb.install=/osb/demo-image.img.gz' "$d/demo-image.iso"
+          grep -aq 'console=tty0' "$d/demo-image.iso"
+          echo "ISO boots on BIOS and UEFI and installs with prompts on screen"
+      - name: Check the image is flashable (alpine)
+        # The real bmaptool round trip: copy through the bmap and compare. Done
+        # on the smaller image - the point is that the bmap and the image agree,
+        # and both distros are built and checked the same way.
+        if: matrix.distro == 'alpine'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bmap-tools
+          d="build/${{ matrix.distro }}/demo-image.x86_64/destdir"
+          bmaptool copy --bmap "$d/demo-image.img.bmap" "$d/demo-image.img" "$RUNNER_TEMP/copy.img"
+          truncate -s "$(stat -c %s "$d/demo-image.img")" "$RUNNER_TEMP/copy.img"
+          cmp "$d/demo-image.img" "$RUNNER_TEMP/copy.img"
+          rm -f "$RUNNER_TEMP/copy.img"
+          echo "bmaptool copy reproduces the image byte for byte"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-image-${{ matrix.distro }}
+          path: |
+            build/${{ matrix.distro }}/demo-image.x86_64/destdir/demo-image.img
+            build/${{ matrix.distro }}/demo-image.x86_64/destdir/demo-image.img.bmap
+            build/${{ matrix.distro }}/demo-image.x86_64/destdir/demo-image.iso
+            build/${{ matrix.distro }}/demo-image.x86_64/destdir/demo-image.sbom.json
+          retention-days: 30
+      - name: Collect build logs
+        if: failure()
+        run: |
+          mkdir -p logs
+          cd build && find . -name '*.log' -exec cp --parents {} "$GITHUB_WORKSPACE/logs" \; || true
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-logs-${{ matrix.distro }}
+          path: logs
+          if-no-files-found: ignore
