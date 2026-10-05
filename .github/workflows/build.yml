@@ -1,11 +1,14 @@
 name: build
 
-# Builds the Ubuntu image with every osb feature and its installer ISO, and
-# keeps them as artifacts for 30 days:
+# Builds the Ubuntu image and its installer ISO, and keeps them as artifacts for
+# 30 days:
 #
 #   demo-image.img + .img.bmap   what you bmaptool onto an SSD or SD card
 #   demo-image.iso               hybrid BIOS/UEFI installer for the same image
 #   demo-image.sbom.json         the package list that went into it
+#
+# The image boots through the distro's own signed shim and GRUB, so it comes up
+# under stock Secure Boot keys without enrolling anything.
 #
 # osb comes from its latest release; if there is no release yet it is built from
 # source, so this works either way.
@@ -23,7 +26,7 @@ concurrency:
 
 jobs:
   image:
-    name: ubuntu all-features
+    name: ubuntu signed-shim
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
@@ -43,13 +46,6 @@ jobs:
           fi
           sudo install -m 0755 "$RUNNER_TEMP/osb" /usr/local/bin/osb
           osb version | tee "$RUNNER_TEMP/osb-version.txt"
-      - name: Install the tooling the features need
-        # secureboot builds a signed UKI: ukify signs it through sbsign, and
-        # mtools writes it to the ESP. bmap-tools is for the check below.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            systemd-ukify sbsigntool mtools bmap-tools
       - name: Allow unprivileged user namespaces
         # osb builds every unit inside a bwrap sandbox, which needs
         # unprivileged user namespaces: Ubuntu 24.04 denies them by default
@@ -94,11 +90,19 @@ jobs:
           # would corrupt the disk: every range checksum matches the image, and
           # every block the bmap skips is zero.
           tools/check-bmap.py "$d/demo-image.img"
+          # The distro's signed chain has to be on the ESP itself, not just
+          # installed in the rootfs: shim as the boot file and our own grub.cfg
+          # with the slot command line.
+          read -r start size < <(sfdisk -d "$d/demo-image.img" | sed -n 's/.*img1 : start= *\([0-9]*\), size= *\([0-9]*\).*/\1 \2/p')
+          esp() { dd if="$d/demo-image.img" bs=512 skip="$start" count="$size" status=none; }
+          esp | grep -aq 'UEFI SHIM'
+          esp | grep -aq 'osb.overlay=tmpfs'
+          esp | grep -aq 'osb.slot='
           # Hybrid boot, the installer payload, and prompts on a screen console.
           grep -aq 'EL TORITO SPECIFICATION' "$d/demo-image.iso"
           grep -aq 'osb.install=/osb/demo-image.img.gz' "$d/demo-image.iso"
           grep -aq 'console=tty0' "$d/demo-image.iso"
-          echo "ISO boots on BIOS and UEFI and installs with prompts on screen"
+          echo "image carries the signed shim chain; ISO installs with prompts on screen"
       - uses: actions/upload-artifact@v4
         with:
           name: demo-image-ubuntu
