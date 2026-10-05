@@ -1,29 +1,25 @@
-# One image, two ways to use it:
+# One Ubuntu image with every feature osb has, plus a C++ program built from
+# source, and an installer ISO for it.
 #
-#   osb build demo-image                     # -> demo-image.img + .img.bmap
-#   osb run -iso demo-image                  # -> boot the installer in QEMU
+#   features:   secureboot  signed UKI, the only way in under Secure Boot
+#               verity      dm-verity root, its hash anchored in the UKI cmdline
+#               readonly    read-only root with a tmpfs overlay (implied by verity)
+#               tpm         TPM support in the initramfs and for osb-tpm
+#               encrypt     /data is LUKS2, its key sealed to the TPM on first boot
+#               ab          two root slots (root-a, root-b) sharing /data
 #
-# `osb build` always writes <image>.img, <image>.img.bmap and
-# <image>.sbom.json; the bmap is what makes `bmaptool` (or `osb flash`) write
-# only the blocks that exist. `iso = True` adds <image>.iso, a hybrid BIOS/UEFI
-# ISO that boots the image's own kernel and installs it onto a target disk.
+#   packages:   BASE_PACKAGES plus "hello", the C++ unit in units/hello, which
+#               installs /usr/bin/hello and enables hello.service.
 #
-# The last partition grows to fill whatever media it lands on, so the image can
-# be small and the SSD or SD card still ends up fully used after the first boot.
+# `osb build` writes <image>.img, <image>.img.bmap (what bmaptool follows) and
+# the SBOM; `iso = True` adds <image>.iso, a hybrid BIOS/UEFI installer.
 load("@core//classes/image.star", "image")
-load("@core//classes/baseline.star", "BASE_DISTRO_PACKAGES", "BASE_PACKAGES", "BASE_SERVICES")
-
-_ALPINE_EXTRA = ["ca-certificates", "curl", "nano"]
-_APT_EXTRA = ["ca-certificates", "curl", "nano"]
+load("@core//classes/baseline.star", "BASE_DISTRO_PACKAGES", "BASE_PACKAGES")
 
 image(
     name = "demo-image",
-    packages = BASE_PACKAGES,
-    distro_packages = {
-        "alpine": BASE_DISTRO_PACKAGES["alpine"] + _ALPINE_EXTRA,
-        "debian": BASE_DISTRO_PACKAGES["debian"] + _APT_EXTRA,
-        "ubuntu": BASE_DISTRO_PACKAGES["ubuntu"] + _APT_EXTRA,
-    },
-    services = BASE_SERVICES,
+    packages = BASE_PACKAGES + ["hello"],
+    distro_packages = BASE_DISTRO_PACKAGES,
+    features = ["secureboot", "verity", "readonly", "encrypt", "tpm", "ab"],
     iso = True,
 )

@@ -2,12 +2,12 @@ project(
     name = "osb-demo",
     version = "0.1.0",
     defaults = defaults(
-        # A disk image you can bmaptool onto an SSD or SD card, plus an
-        # installer ISO. x86_64 is the generic UEFI PC profile; switch to
-        # arm64 for a UEFI arm64 board or server. Both use the full distro
-        # kernel, so they see the disks a real machine (or a VM) hands out.
+        # Ubuntu with every image feature osb has: a Secure Boot signed UKI,
+        # dm-verity root, read-only overlay, TPM-sealed encrypted /data, and two
+        # root slots. Built for the generic x86_64 machine, which uses the full
+        # distro kernel, so the same image boots on real hardware and in a VM.
         machine = "x86_64",
         image = "demo-image",
-        distro = "alpine",
+        distro = "ubuntu",
     ),
 )

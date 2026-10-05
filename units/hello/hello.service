@@ -1,0 +1,13 @@
+[Unit]
+Description=osb-demo hello (C++ application built by osb)
+ConditionPathExists=/usr/bin/hello
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/hello
+StandardOutput=journal
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

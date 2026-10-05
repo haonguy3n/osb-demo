@@ -1,41 +1,43 @@
 # osb-demo
 
-An [osb](https://github.com/haonguy3n/osb) project whose one image is both
-flashable and installable:
+An [osb](https://github.com/haonguy3n/osb) project: one Ubuntu image with every
+feature osb has, a C++ application built from source, and an installer ISO.
 
 | artifact | what it is |
 | --- | --- |
 | `demo-image.img` | the disk image |
-| `demo-image.img.bmap` | block map: `bmaptool` writes only the blocks that exist and verifies them |
+| `demo-image.img.bmap` | block map: `bmaptool` writes only the blocks that exist, and verifies them |
 | `demo-image.iso` | hybrid BIOS/UEFI installer ISO that writes the image onto an internal disk |
+| `demo-image.sbom.json` | the package list that went into the image |
 
-The last partition grows to fill the media on first boot, so the image stays
-small and a 32 GB SSD or SD card still ends up fully used.
+Features: `secureboot` (signed UKI), `verity` (dm-verity root, hash anchored in
+the signed command line), `readonly` (tmpfs overlay), `tpm` + `encrypt`
+(`/data` is LUKS2 with its key sealed to the TPM on first boot), and `ab` (two
+root slots sharing `/data`). The last partition grows to fill the media on first
+boot, so the image can be small and a 32 GB SSD or SD card still ends up used.
 
 ## Prerequisites
 
 - Docker (osb builds every unit in a container).
-- `osb` built from osb `main` - the console and installer work this project
-  relies on lives there:
+- `osb` from its latest release:
 
   ```sh
-  cd ~/Projects/osb && go build -o ~/.local/bin/osb ./cmd/osb
+  curl -fsSL -o osb https://github.com/haonguy3n/osb/releases/latest/download/osb-linux-amd64
+  chmod +x osb && sudo install -m 0755 osb /usr/local/bin/osb
   osb version
   ```
 
-- `bmaptool` for flashing (`pacman -S bmap-tools`, `apt install bmap-tools`).
-- `qemu-system-x86` + `edk2-ovmf` only if you want to try the ISO without
-  touching real hardware.
+  (Or `cd ~/Projects/osb && go build -o ~/.local/bin/osb ./cmd/osb`.)
+- Host tooling for the features being built: `systemd-ukify`, `sbsigntool` and
+  `mtools` (the signed UKI), `bmap-tools` (flashing).
+- Only for a QEMU test: `qemu-system-x86`, `edk2-ovmf`/`ovmf`, `swtpm` and
+  `virt-firmware` (the TPM and the Secure Boot variable enrolment).
 
 ## Build
 
 ```sh
-make build                      # alpine, x86_64
-make build DISTRO=ubuntu        # the same image from Ubuntu packages
-make build MACHINE=arm64        # a UEFI arm64 board or server
-
-# or directly:
-osb build demo-image -distro alpine -machine x86_64
+make build                      # -> build/ubuntu/demo-image.x86_64/destdir/
+make check                      # verify the bmap describes the image exactly
 ```
 
 Artifacts land in `build/<distro>/demo-image.<machine>/destdir/`.
@@ -47,55 +49,70 @@ make list                       # removable disks, so you pick the right one
 make flash DISK=/dev/sdb        # bmaptool copy --bmap ..., then verify
 ```
 
-The equivalent by hand, if you prefer to see it:
+The equivalent by hand:
 
 ```sh
-sudo bmaptool copy --bmap build/alpine/demo-image.x86_64/destdir/demo-image.img.bmap \
-                          build/alpine/demo-image.x86_64/destdir/demo-image.img /dev/sdb
+sudo bmaptool copy --bmap build/ubuntu/demo-image.x86_64/destdir/demo-image.img.bmap \
+                          build/ubuntu/demo-image.x86_64/destdir/demo-image.img /dev/sdb
 ```
 
-`osb flash demo-image /dev/sdb` does the same thing with a confirmation prompt.
-On first boot the root partition is grown to the end of the media.
+`osb flash demo-image /dev/sdb` does the same with a confirmation prompt, and
+`tools/check-bmap.py` proves beforehand that the bmap and the image agree (every
+checksum matches, every skipped block is zero). On first boot the root grows to
+the end of the media.
 
 ## Install from the ISO
 
-Write the ISO to a USB stick, boot it on the target machine and answer the
-installer's prompts:
-
 ```sh
-make iso DISK=/dev/sdb
+make iso DISK=/dev/sdb          # write the installer ISO to a USB stick
 ```
 
-Or try it in QEMU first, against a blank disk:
+Boot the stick, answer the installer's prompts and it writes the image to the
+disk you pick; the ISO boots on BIOS and UEFI, and the prompts are on the
+screen as well as a serial console. To try it in QEMU instead, build and run for
+a `qemu-*` machine, which talks to the serial console:
 
 ```sh
-make run
+make build MACHINE=qemu-x86_64
+make run   MACHINE=qemu-x86_64
 ```
 
-The installer asks which disk to erase and expects `YES`; with
-`osb.target=/dev/sda` on the ISO's command line it installs unattended and
-powers off. The ISO boots on BIOS and on UEFI, and the installer is visible on
-both the screen and a serial console.
+## The C++ application
 
-## Notes
+`units/hello/` is a small C++17 program with a `CMakeLists.txt`; `units/hello.star`
+builds it with cmake, installs it as `/usr/bin/hello` and enables
+`hello.service`, which runs it once at boot. In the running image:
 
-- **Which kernel**: the `x86_64` and `arm64` machines use the full distro
-  kernel (`linux-lts` / `linux-image-generic`), so the installer and the
-  installed system can see IDE/SATA, NVMe, USB and the LSI/PVSCSI controllers a
-  virtual machine or server uses. The `qemu-*` machines use the stripped-down
-  `linux-virt`/`linux-image-virtual` flavours and are meant for CI only.
-- **SD cards**: any SD card in a USB reader works, as do the native SD
-  controllers in laptops and tablets (`sdhci`). An arm64 `arm64` build needs the
-  board to boot generic UEFI images - Raspberry Pi's VideoCore bootloader is not
-  something osb produces, so a Pi needs its own UEFI firmware on the SD card
-  first.
-- **Reproducibility**: every build also writes `demo-image.sbom.json` (a
-  CycloneDX package list), and `osb build` caches work per content hash, so
-  rebuilds after the first are quick.
+```sh
+hello                    # hello from Linux ... on x86_64
+systemctl status hello   # run once at boot, output in the journal
+```
 
-## Changing what is in the image
+Change the source and rebuild: osb caches units by content hash, so only that
+unit and the image are rebuilt.
 
-`images/demo-image.star` is the whole definition: add packages to `packages`
-(built by osb) or `distro_packages` (taken from the distro's repositories), add
-features such as `secureboot`, `verity`, `encrypt`, `tpm`, `ab` or `readonly`,
-or define units of your own under `units/`.
+## Things to know before you ship this
+
+- **Secure Boot keys**: without `osb key secure-boot` the image is signed with
+  osb's *public test key*. Run that before building and enrol the resulting
+  certificate to boot it under enforced Secure Boot. The images CI publishes are
+  signed with the test key.
+- **TPM**: `encrypt`/`tpm` seal the `/data` key to the TPM of the machine that
+  boots the image, so it needs one (QEMU uses `swtpm`). Without a TPM the
+  initramfs stops with "no TPM found to seal the encryption key".
+- **The ISO is not signed**: the installer's bootloader is Limine, which osb does
+  not sign, so installing from the ISO on an enforcing machine means turning
+  Secure Boot off (or enrolling Limine) for the install.
+- **A/B fallback is not automatic with this loader**: the `ab` feature gives two
+  root slots and, with the GRUB loader, GRUB's fallback script. `secureboot`
+  forces the UKI loader, which writes a signed UKI per slot but has no
+  equivalent fallback yet.
+- **Size**: two root slots plus a verity hash partition per slot make the image
+  a few GB. Drop `ab` (or `verity`) if you want something smaller.
+
+## CI
+
+`.github/workflows/build.yml` builds the image and ISO, checks the bmap and the
+ISO structure, and uploads `demo-image.img`, the bmap, the ISO and the SBOM as
+an artifact kept for 30 days. It installs osb from its latest release, falling
+back to a source build when no release exists yet.

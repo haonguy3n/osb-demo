@@ -1,21 +1,24 @@
-DISTRO ?= alpine
+DISTRO ?= ubuntu
 MACHINE ?= x86_64
 IMAGE ?= demo-image
 DEST := build/$(DISTRO)/$(IMAGE).$(MACHINE)/destdir
 
-.PHONY: build iso run flash list clean
+.PHONY: build check run flash iso list key clean
 
 ## Build the disk image, its bmap and the installer ISO.
 build:
 	osb build $(IMAGE) -distro $(DISTRO) -machine $(MACHINE)
 	@ls -l $(DEST)/$(IMAGE).img $(DEST)/$(IMAGE).img.bmap $(DEST)/$(IMAGE).iso
 
-## Boot the installer ISO in QEMU against a blank disk.
+## Prove the bmap describes the image exactly (what bmaptool relies on).
+check:
+	tools/check-bmap.py $(DEST)/$(IMAGE).img
+
+## Boot the installer ISO in QEMU. Use MACHINE=qemu-x86_64 for a serial console.
 run:
 	osb run -iso $(IMAGE) -distro $(DISTRO) -machine $(MACHINE)
 
 ## Flash the image to a disk, e.g. make flash DISK=/dev/sdb
-## bmaptool skips the blocks the bmap marks empty and verifies checksums.
 flash:
 	@test -n "$(DISK)" || { echo "usage: make flash DISK=/dev/sdX   (see: make list)"; exit 2; }
 	sudo bmaptool copy --bmap $(DEST)/$(IMAGE).img.bmap $(DEST)/$(IMAGE).img $(DISK)
@@ -28,6 +31,10 @@ iso:
 ## Show removable disks so you can pick the right one.
 list:
 	osb flash list
+
+## Create this project's own Secure Boot key (otherwise osb's test key is used).
+key:
+	osb key secure-boot
 
 clean:
 	osb clean -all

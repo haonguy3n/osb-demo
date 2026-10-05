@@ -3,8 +3,8 @@
 /cache
 /repo
 /feeds
-/osb-src
 /logs
+/keys
 *.img
 *.img.bmap
 *.iso
