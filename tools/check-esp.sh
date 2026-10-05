@@ -45,10 +45,11 @@ case "$chain" in
     uki)
         read_fat /EFI/BOOT/grubx64.efi | grep -aq 'roothash=' ||
             fail "the second stage is not a UKI carrying the verity root hash"
-        cert=$(read_fat /EFI/osb/osb.crt)
-        printf '%s' "$cert" | openssl x509 -inform der -noout -subject 2>/dev/null |
+        # Straight through a pipe: the certificate is binary, and a shell
+        # variable would silently strip its NUL bytes.
+        read_fat /EFI/osb/osb.crt | openssl x509 -inform der -noout -subject 2>/dev/null |
             grep -q 'osb Secure Boot' ||
-            fail "EFI/osb/osb.crt on the ESP is not osb's certificate"
+            fail "EFI/osb/osb.crt on the ESP is not a DER certificate signed by osb"
         echo "ok: shim -> osb's signed UKI (roothash inside) and osb's certificate on the ESP of $img"
         ;;
     *)
