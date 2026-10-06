@@ -113,6 +113,20 @@ There is no ISO for `verity-image` on purpose: that image needs an enrolment
 before it boots, so an installer should perform it — the natural next step, and
 a one-line `iso = True` once it does.
 
+## Testing in VirtualBox
+
+Both images boot in VirtualBox with UEFI firmware. `demo-image` also needs a
+TPM 2.0 for its encrypted `/data`; neither needs a Secure Boot key enrolled,
+because VirtualBox does not implement Secure Boot - which is also the one thing
+it cannot test about these images. [docs/virtualbox.md](docs/virtualbox.md) has
+the setup, what to check inside the guest, the installer's reboot, and a
+troubleshooting table; `vbox/create-vm.ps1` does the VBoxManage work:
+
+```powershell
+.\vbox\create-vm.ps1 -Mode Image -Source .\verity-image.img -DiskGb 20
+.\vbox\create-vm.ps1 -Mode Iso  -Source .\demo-image.iso   -DiskGb 20 -Tpm
+```
+
 ## The C++ application
 
 `units/hello/` is a small C++17 program with a `CMakeLists.txt`; `units/hello.star`
