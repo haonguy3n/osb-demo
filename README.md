@@ -164,3 +164,16 @@ systemctl status hello   # run once at boot, output in the journal
 `.github/workflows/build.yml` builds both images, checks the bmap and the chain
 on each ESP, and uploads them as artifacts kept for 30 days. It installs osb from
 its latest release, falling back to a source build when no release exists yet.
+
+To get the ISO (and the images) out of a run - they are zips, so unzip before
+pointing VirtualBox or bmaptool at them:
+
+```sh
+gh run list     --repo haonguy3n/osb-demo --limit 3
+gh run download --repo haonguy3n/osb-demo -n demo-image     # .img, .bmap, .iso, .sbom.json
+gh run download --repo haonguy3n/osb-demo -n verity-image
+```
+
+Or from the run page: *Artifacts* -> `demo-image`. Only `demo-image` has an ISO;
+`verity-image` deliberately does not, because it needs a MOK enrolment before it
+boots and an installer should do that first.

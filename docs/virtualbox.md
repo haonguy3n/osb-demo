@@ -50,6 +50,10 @@ of the same name rather than clobbering it.
 3. **Storage** → add a SATA controller → attach the disk and, in Iso mode, the ISO
    as an optical drive.
 
+The ISO and the images come from CI; the end of the main README has the two
+commands that fetch them. (Older VirtualBox releases spell the TPM option
+`--tpm-type 2` rather than `2.0`.)
+
 For Image mode, convert the raw image first — it is a disk, not a container:
 
 ```bat
