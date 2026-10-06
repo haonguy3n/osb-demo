@@ -68,17 +68,28 @@ the whole story — it boots under Secure Boot straight away.
 
 `verity-image` boots through osb's own signed UKI, so shim has to be told to
 trust osb's certificate before it will run. The certificate is on the ESP at
-`EFI/osb/osb.crt`, and nothing is enrolled automatically:
+`EFI/osb/osb.crt` (DER) with the same certificate in PEM as `EFI/osb/osb.pem`,
+and nothing is enrolled automatically.
 
-1. Boot the freshly flashed disk. Shim cannot verify the UKI, so it starts
-   **MokManager**.
+From the console, no password and no tools - the path for a freshly flashed
+disk:
+
+1. Boot it. Shim cannot verify the UKI, so it starts **MokManager**.
 2. Choose *Enroll key from disk*, pick `EFI/osb/osb.crt`, confirm, and reboot.
 
-That is the whole enrolment, and it is deliberately a physical-presence step:
-only someone at the console can add a key. From a running system (a live ISO, or
-a system already enrolled) the same thing is
-`mokutil --import /EFI/osb/osb.pem`, which leaves a request MokManager asks you
-to confirm after the next reboot.
+From a running system that has the certificate - a live system, or one already
+enrolled - for a rotation or a scripted install:
+
+```sh
+mokutil --import /EFI/osb/osb.crt     # DER: --import rejects the PEM
+mokutil --list-enrolled               # afterwards: osb's key should be listed
+mokutil --sb-state                    # and this should say enabled
+```
+
+`mokutil --import` asks for a password, which you type in MokManager after the
+next reboot; `--revoke-import` cancels a request you no longer want. Either way
+it is deliberately a physical-presence step: only someone at the console can add
+a key.
 
 ## Install from the ISO
 
